@@ -1,32 +1,20 @@
-# base defines a base stage that uses the official python runtime base image
-FROM python:3.11-slim AS base
+# Pin specific slim base image
+FROM python:3.11.8-slim-bookworm
 
-# Add curl for healthcheck
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-# Set the application directory
-WORKDIR /usr/local/app
-
-# Install our requirements.txt
-COPY requirements.txt ./requirements.txt
+# Copy requirements and install
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# dev defines a stage for development, where it'll watch for filesystem changes
-FROM base AS dev
-RUN pip install watchdog
-ENV FLASK_ENV=development
-CMD ["python", "app.py"]
-
-# final defines the stage that will bundle the application for production
-FROM base AS final
-
-# Copy our code from the current folder to the working directory inside the container
+# Copy application files
 COPY . .
 
-# Make port 80 available for links and/or publish
+# Run as non-root user
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+RUN chown -R appuser:appgroup /app
+USER appuser
+
 EXPOSE 80
 
-# Define our command to be run when launching the container
-CMD ["gunicorn", "app:app", "-b", "0.0.0.0:80", "--log-file", "-", "--access-logfile", "-", "--workers", "4", "--keep-alive", "0"]
+CMD ["python", "app.py"]

@@ -1,1 +1,7 @@
-node_modules/
+.git
+Dockerfile
+.dockerignore
+node_modules
+__pycache__
+*.pyc
+.DS_Store

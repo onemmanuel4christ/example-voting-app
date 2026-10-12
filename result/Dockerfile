@@ -1,25 +1,20 @@
-FROM node:18-slim
+# Pin specific alpine base image
+FROM node:18.19.1-alpine
 
-# add curl for healthcheck
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl tini && \
-    rm -rf /var/lib/apt/lists/*
+WORKDIR /usr/app
 
-WORKDIR /usr/local/app
-
-# have nodemon available for local dev use (file watching)
-RUN npm install -g nodemon
-
+# Copy dependency definitions
 COPY package*.json ./
 
-RUN npm ci && \
- npm cache clean --force && \
- mv /usr/local/app/node_modules /node_modules
+RUN npm ci && npm cache clean --force
 
+# Copy application files
 COPY . .
 
-ENV PORT=80
+# Run as non-root user (Alpine comes with built-in 'node' user)
+RUN chown -R node:node /usr/app
+USER node
+
 EXPOSE 80
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "server.js"]
