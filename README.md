@@ -1,168 +1,276 @@
-# Example Voting App (DevOps Capstone 1)
+# Capstone 1 Deployment Report: Distributed Voting Application on AWS EKS
 
-A fully containerized, microservices-based distributed voting application deployed onto **AWS Elastic Kubernetes Service (EKS)** using **Terraform**, **Helm**, and automated with a **GitHub Actions CI/CD pipeline**.
-
----
-
-## Architecture Overview
-
-The application is composed of five specialized microservices:
-
-* **Vote (`vote`)**: A Python/Flask front-end web application that allows users to cast a vote between two choices.
-* **Redis (`redis`)**: An in-memory queue that temporarily stores incoming votes from the vote service.
-* **Worker (`worker`)**: A .NET background service that consumes votes from Redis and persists them into the database.
-* **Database (`db`)**: A PostgreSQL database backed by persistent storage that maintains the tally of votes.
-* **Result (`result`)**: A Node.js and Socket.IO web application that queries the PostgreSQL database and displays real-time voting results to users.
+**Author:** Emmanuel  
+**Project:** DevOps Capstone 1 – Containerization, CI/CD, IaC & Kubernetes Orchestration  
+**Cluster Name:** `voting-app-cluster-kachi`  
+**Docker Hub Registry:** `kachdev`  
 
 ---
 
-## System Architecture Diagram
+## Executive Summary
+
+This report documents the end-to-end deployment of a multi-tier, distributed microservices voting application to **Amazon Web Services (AWS) Elastic Kubernetes Service (EKS)**. 
+
+The project encompasses:
+1. **Container Security & Optimization**: Hardening Dockerfiles with minimal base images and non-root users.
+2. **Infrastructure as Code (IaC)**: Provisioning a production-ready AWS EKS cluster and node groups using **Terraform**.
+3. **Automated CI/CD & DevSecOps**: Building, scanning (with **Trivy**), and publishing container images to **Docker Hub** using **GitHub Actions**.
+4. **Kubernetes Orchestration**: Packaging and deploying microservices using a custom **Helm Chart** (`voting-app-chart`) and exposing frontends via **AWS Elastic LoadBalancers**.
+
+---
+
+## 1. Application Architecture
+
+The application is structured into five independent microservices communicating over internal and external networks:
+
+| Service | Technology | Role | Port |
+|---|---|---|---|
+| **`vote`** | Python 3.11 (Flask) | User-facing web frontend to cast votes | 80 |
+| **`redis`** | Redis (Alpine) | In-memory message queue buffering votes | 6379 |
+| **`worker`** | .NET 7.0 | Background service consuming votes from Redis | N/A |
+| **`db`** | PostgreSQL 15 (Alpine) | Persistent relational database storing final vote counts | 5432 |
+| **`result`** | Node.js 18 (Socket.IO) | Real-time web frontend displaying vote tallies | 4000 (LB: 80) |
+
+### System & Deployment Architecture Diagram
 
 ```mermaid
 flowchart TD
-    subgraph CI_CD["CI/CD Pipeline (GitHub Actions: deploy.yml)"]
-        DevPush["Developer Push to main"] --> GHActions["GitHub Actions Runner"]
-        GHActions --> TrivyScan["Trivy Vulnerability Scan"]
-        TrivyScan --> DockerBuild["Docker Build & Push"]
-        DockerBuild -->|Push :latest & :sha| DockerHub[("Docker Hub Registry<br/>docker.io/kachdev/*")]
+    subgraph CI_CD["1. CI/CD & DevSecOps (GitHub Actions)"]
+        GitCommit["git push origin main"] --> Pipeline["GitHub Actions (.github/workflows/deploy.yml)"]
+        Pipeline --> Trivy["Trivy Vulnerability Scanner"]
+        Trivy --> DockerBuild["Docker BuildKit"]
+        DockerBuild -->|Tag :latest & :SHA| DockerHub[("Docker Hub Registry<br/>docker.io/kachdev/*")]
     end
 
-    subgraph AWS_EKS["AWS EKS Cluster: voting-app-cluster-kachi"]
-        subgraph External_Access["AWS Elastic LoadBalancers"]
-            VoteLB["Vote LoadBalancer<br/>HTTP Port 80"]
-            ResultLB["Result LoadBalancer<br/>HTTP Port 80 / 4000"]
+    subgraph IaC["2. Infrastructure as Code (Terraform)"]
+        TFCode["Terraform Configs (terraform/)"] --> TFApply["terraform apply"]
+        TFApply --> EKSCluster["AWS EKS Cluster<br/>voting-app-cluster-kachi (us-east-1)"]
+        TFApply --> NodeGroup["Managed Node Group<br/>(t3.medium instances)"]
+    end
+
+    subgraph K8s["3. Kubernetes Orchestration (Helm: voting-app-chart)"]
+        HelmCLI["helm upgrade --install voting-app"] --> K8sManifests["Deployments & Services"]
+        
+        subgraph Pods["Microservices Pods"]
+            VotePod["vote (Python)<br/>Port 80"]
+            RedisPod[("redis<br/>Port 6379")]
+            WorkerPod["worker (.NET)"]
+            DBPod[("db (PostgreSQL)<br/>Port 5432")]
+            ResultPod["result (Node.js)<br/>Port 4000"]
         end
 
-        subgraph K8s_Pods["Kubernetes Pods & Services (voting-app-chart)"]
-            VotePod["Vote Pod (Python)<br/>Port 80"]
-            RedisPod[("Redis Pod<br/>Port 6379")]
-            WorkerPod["Worker Pod (.NET)"]
-            DBPod[("PostgreSQL Pod<br/>Port 5432")]
-            ResultPod["Result Pod (Node.js)<br/>Port 4000"]
+        subgraph Ingress["AWS Elastic LoadBalancers"]
+            VoteLB["Vote External LoadBalancer<br/>HTTP Port 80"]
+            ResultLB["Result External LoadBalancer<br/>HTTP Port 80 -> Target 4000"]
         end
 
         VoteLB --> VotePod
-        VotePod -->|"Write Vote"| RedisPod
-        WorkerPod -->|"Fetch Vote"| RedisPod
-        WorkerPod -->|"Persist Vote"| DBPod
-        ResultPod -->|"Query Results"| DBPod
         ResultLB --> ResultPod
+
+        VotePod -->|"Write to queue"| RedisPod
+        WorkerPod -->|"Consume from queue"| RedisPod
+        WorkerPod -->|"Write votes"| DBPod
+        ResultPod -->|"Query votes"| DBPod
     end
 
-    DockerHub -.->|"Pull Images"| VotePod
-    DockerHub -.->|"Pull Images"| ResultPod
-    DockerHub -.->|"Pull Images"| WorkerPod
-
-    HelmDeploy["Helm CLI<br/>(voting-app-chart)"] -->|"Deploy Manifests"| K8s_Pods
+    DockerHub -.->|"Pull Images"| Pods
 ```
 
 ---
 
-## Prerequisites
+## 2. Containerization & Security Hardening
 
-Before deploying the application, ensure the following CLI tools are installed and configured:
+To establish container security best practices, I refactored the Dockerfiles across the codebase:
 
-1. **[AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html)**: Configured with your AWS credentials (`aws configure`).
-2. **[Terraform](https://www.terraform.io/downloads.html)** (>= 1.3.0): Used to provision EKS infrastructure and IAM roles.
-3. **[kubectl](https://kubernetes.io/docs/tasks/tools/)**: To inspect and interact with the Kubernetes cluster.
-4. **[Helm v3](https://helm.sh/docs/intro/install/)**: Kubernetes package manager used for deploying the application chart.
-5. **[Docker Desktop](https://www.docker.com/)**: For building or running containers locally.
+### Python Vote Service (`vote/Dockerfile`)
+* Pinned to official slim base image `python:3.11.8-slim-bookworm`.
+* Created dedicated system user and group (`appuser:appgroup`) to run without root privileges.
+* Cleaned pip cache using `--no-cache-dir`.
+
+### Node.js Result Service (`result/Dockerfile`)
+* Pinned to lightweight `node:18.19.1-alpine`.
+* Executed container processes using Alpine's built-in non-root `node` user.
+* Enforced clean dependency installation with `npm ci && npm cache clean --force`.
+
+### .NET Worker Service (`worker/Dockerfile`)
+* Implemented a multi-stage build:
+  * **Build stage**: `mcr.microsoft.com/dotnet/sdk:7.0.406` to restore dependencies and compile.
+  * **Runtime stage**: `mcr.microsoft.com/dotnet/aspnet:7.0.16` for an optimized runtime footprint.
+* Added non-root user `appuser` and set proper `/app` permissions.
+
+### Build Context Optimization (`.dockerignore`)
+Created specific `.dockerignore` files for `vote`, `result`, and `worker` to exclude build artifacts, git metadata, and local development caches (`node_modules`, `obj/`, `bin/`, `__pycache__`).
 
 ---
 
-## Step-by-Step Deployment Guide
+## 3. Infrastructure as Code with Terraform
 
-### 1. Provision Infrastructure with Terraform
+I provisioned the cloud infrastructure on AWS using modular Terraform scripts in `terraform/`:
 
-Navigate into the `terraform/` directory to initialize and provision the AWS EKS cluster (`voting-app-cluster-kachi`):
+* **`providers.tf`**: Pinned AWS provider `~> 5.0` and Terraform `~> 1.3.0`.
+* **`variables.tf`**: Parameterized region (`us-east-1`) and custom cluster name (`voting-app-cluster-kachi`).
+* **`main.tf`**:
+  * IAM Roles with least-privilege policies: `AmazonEKSClusterPolicy`, `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`.
+  * Managed Node Group scaling configuration: `desired_size = 2`, `min_size = 1`, `max_size = 3` using `t3.medium` instances.
 
+### Key Challenge & Resolution: AWS EKS Availability Zone Constraint
+During initial deployment, cluster creation failed with:
+```
+UnsupportedAvailabilityZoneException: Cannot create cluster 'voting-app-cluster' because EKS does not support creating control plane instances in us-east-1e
+```
+**Resolution**: Updated `main.tf` to inspect all VPC subnets and filter out `us-east-1e` from both the EKS control plane and node group configuration:
+```hcl
+data "aws_subnet" "default" {
+  for_each = toset(data.aws_subnets.default.ids)
+  id       = each.value
+}
+
+locals {
+  eks_subnets = [
+    for s in data.aws_subnet.default : s.id
+    if s.availability_zone != "us-east-1e"
+  ]
+}
+```
+
+### Infrastructure Commands Executed:
 ```bash
 cd terraform
 terraform init
 terraform plan
-terraform apply
-```
-
-*(Enter `yes` when prompted. EKS provisioning takes approximately 10–15 minutes).*
-
-### 2. Configure kubectl for EKS
-
-Once Terraform completes, update your local kubeconfig to authenticate with your new cluster:
-
-```bash
+terraform apply -auto-approve
 aws eks update-kubeconfig --region us-east-1 --name voting-app-cluster-kachi
 ```
 
-Verify your cluster connection and nodes:
+---
 
-```bash
-kubectl get nodes
+## 4. Automated CI/CD Pipeline (GitHub Actions)
+
+I automated the build, security auditing, and delivery process in [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml).
+
+### Pipeline Workflow Steps:
+1. **Trigger**: Executes automatically on every push to the `main` branch.
+2. **Security Audit (Trivy)**: Scans repository filesystem dependencies for critical vulnerabilities before container compilation.
+3. **Docker Hub Authentication**: Logs into Docker Hub using encrypted repository secrets (`DOCKER_USERNAME` and `DOCKER_PASSWORD`).
+4. **Dual-Tag Build & Push**:
+   * Builds and pushes `kachdev/voting-app-vote` with `:latest` and `:${{ github.sha }}`.
+   * Builds and pushes `kachdev/voting-app-result` with `:latest` and `:${{ github.sha }}`.
+   * Builds and pushes `kachdev/voting-app-worker` with `:latest` and `:${{ github.sha }}`.
+
+### Key Challenge & Resolution: Git LFS / GitHub File Size Limits
+During local terraform caching, the AWS provider plugin binary (`terraform-provider-aws_v5.100.0_x5.exe`, ~685 MB) was inadvertently staged, leading to GitHub blocking the push:
 ```
+remote: error: GH001: Large files detected (>100.00 MB)
+```
+**Resolution**:
+1. Added `.terraform/` and `*.tfstate*` to `.gitignore`.
+2. Performed a soft reset (`git reset origin/main`) to eliminate the large binary from commit history.
+3. Re-committed only configuration files and pushed cleanly.
 
-### 3. Deploy via Helm Chart
+---
 
-From the root of the repository, deploy or upgrade the voting application using Helm:
+## 5. Kubernetes Orchestration with Helm
 
+To simplify application deployment and configuration management, I authored a custom Helm chart in `voting-app-chart/`.
+
+### Helm Chart Structure:
+* **`Chart.yaml`**: Metadata defining chart name and version.
+* **`values.yaml`**: Centralized values defining the global registry namespace:
+  ```yaml
+  global:
+    username: kachdev
+  ```
+* **`templates/all-services.yaml`**: Unified specification for:
+  * Deployments for `vote`, `redis`, `worker`, `db`, and `result`.
+  * ClusterIP Services for internal routing (`redis`, `db`).
+  * LoadBalancer Services for public-facing frontends (`vote` on port 80, `result` on port 80 routing to containerPort 4000).
+
+### Deployment Command:
 ```bash
 helm upgrade --install voting-app ./voting-app-chart
 ```
 
-To customize parameters such as the Docker Hub username, update `voting-app-chart/values.yaml` or pass values inline:
+### Key Challenge & Resolution: Image Tag Mismatch & Rollout
+Initial pods encountered `ErrImagePull` because the manifests specified `:latest`, while the initial CI pipeline only published commit SHAs. 
 
+**Resolution**:
+1. Updated `.github/workflows/deploy.yml` to publish both `:${{ github.sha }}` and `:latest`.
+2. Triggered a clean pipeline build.
+3. Executed a rolling restart to force Kubernetes to pull the freshly published images:
 ```bash
-helm upgrade --install voting-app ./voting-app-chart --set global.username=kachdev
+kubectl rollout restart deployment vote result worker
 ```
 
-### 4. Verify Deployments & Services
+---
 
-Check that all pods are up and running:
+## 6. Verification & Final Results
+
+### Pod Status
+All five microservice pods successfully reached `Running` status:
 
 ```bash
-kubectl get pods
-```
-
-Expected output:
-```text
+$ kubectl get pods
 NAME                      READY   STATUS    RESTARTS   AGE
-db-76f46dd747-z2tmk       1/1     Running   0          ...
-redis-74f58cd5db-fzvnq    1/1     Running   0          ...
-result-8b4558555-nqp9j    1/1     Running   0          ...
-vote-6f56f4bbff-c8gpl     1/1     Running   0          ...
-worker-59bc4444c-bznlm    1/1     Running   0          ...
+db-76f46dd747-z2tmk       1/1     Running   0          10m
+redis-74f58cd5db-fzvnq    1/1     Running   0          11m
+result-8b4558555-nqp9j    1/1     Running   0          20s
+vote-6f56f4bbff-c8gpl     1/1     Running   0          5m
+worker-59bc4444c-bznlm    1/1     Running   0          20s
 ```
 
-Retrieve the external URLs allocated by the AWS Elastic LoadBalancers:
+### External Services & LoadBalancers
+AWS Elastic Load Balancers were provisioned and validated:
 
 ```bash
+$ kubectl get svc
+NAME         TYPE           CLUSTER-IP       EXTERNAL-IP                                                               PORT(S)
+db           ClusterIP      10.100.60.234    <none>                                                                    5432/TCP
+kubernetes   ClusterIP      10.100.0.1       <none>                                                                    443/TCP
+redis        ClusterIP      10.100.44.137    <none>                                                                    6379/TCP
+result       LoadBalancer   10.100.69.124    aa8797ee470a64c5fa528c06f2f8db75-1411993242.us-east-1.elb.amazonaws.com   80:31149/TCP
+vote         LoadBalancer   10.100.135.115   a90e949b0bb1e4376817878a2afef4b1-1128650376.us-east-1.elb.amazonaws.com   80:31345/TCP
+```
+
+* **Vote Web Application**: Fully operational on port `80`.
+* **Result Web Application**: Real-time Socket.IO score updates functioning on port `80`.
+
+---
+
+## 7. How to Reproduce This Deployment
+
+### Prerequisites:
+* AWS CLI v2 configured with IAM admin rights
+* Terraform >= 1.3.0
+* kubectl & Helm v3
+* Docker Desktop
+
+### Quickstart Commands:
+```bash
+# 1. Clone repository
+git clone https://github.com/onemmanuel4christ/example-voting-app.git
+cd example-voting-app
+
+# 2. Provision AWS EKS Cluster
+cd terraform
+terraform init
+terraform apply -auto-approve
+aws eks update-kubeconfig --region us-east-1 --name voting-app-cluster-kachi
+cd ..
+
+# 3. Deploy Application with Helm
+helm upgrade --install voting-app ./voting-app-chart
+
+# 4. Check Cluster Status
+kubectl get pods
 kubectl get svc
 ```
 
-* **Vote UI**: Access via the external URL of `vote` service on port `80`.
-* **Result UI**: Access via the external URL of `result` service on port `80` (routing to container port `4000`).
-
 ---
 
-## CI/CD Pipeline (GitHub Actions)
+## Conclusion
 
-The continuous integration and deployment pipeline is defined in [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and runs on every push to the `main` branch:
-
-1. **Checkout**: Retrieves source code.
-2. **Docker Hub Authentication**: Securely authenticates using GitHub repository secrets (`DOCKER_USERNAME` and `DOCKER_PASSWORD`).
-3. **Security Scan**: Executes **Trivy** vulnerability scanner across filesystem dependencies.
-4. **Container Build & Push**:
-   * Pushes hardened Python Vote image: `kachdev/voting-app-vote:latest` & `kachdev/voting-app-vote:<SHA>`
-   * Pushes Alpine Node.js Result image: `kachdev/voting-app-result:latest` & `kachdev/voting-app-result:<SHA>`
-   * Pushes .NET Worker runtime image: `kachdev/voting-app-worker:latest` & `kachdev/voting-app-worker:<SHA>`
-
----
-
-## Local Development (Docker Compose)
-
-To test the application locally:
-
-```bash
-docker compose up -d
-```
-
-* Vote: [http://localhost:8080](http://localhost:8080)
-* Result: [http://localhost:8081](http://localhost:8081)
+This project successfully implements modern DevOps principles:
+* **Security-first**: Rootless Docker containers and vulnerability scanning in CI.
+* **Reproducibility**: Infrastructure defined purely through code (Terraform).
+* **Automation**: CI/CD pipeline managing testing, packaging, and registry publishing.
+* **Scalability**: Cloud-native orchestration via Kubernetes and Helm.
