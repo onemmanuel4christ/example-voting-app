@@ -31,18 +31,24 @@ jobs:
         with:
           context: ./vote
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/voting-app-vote:${{ github.sha }}
-          
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/voting-app-vote:latest
+            ${{ secrets.DOCKER_USERNAME }}/voting-app-vote:${{ github.sha }}
+
       - name: Build and push Result image
         uses: docker/build-push-action@v4
         with:
           context: ./result
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/voting-app-result:${{ github.sha }}
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/voting-app-result:latest
+            ${{ secrets.DOCKER_USERNAME }}/voting-app-result:${{ github.sha }}
 
       - name: Build and push Worker image
         uses: docker/build-push-action@v4
         with:
           context: ./worker
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/voting-app-worker:${{ github.sha }}
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/voting-app-worker:latest
+            ${{ secrets.DOCKER_USERNAME }}/voting-app-worker:${{ github.sha }}
