@@ -19,66 +19,9 @@ The project encompasses:
 
 ---
 
-## 1. Application Architecture
 
-The application is structured into five independent microservices communicating over internal and external networks:
 
-| Service | Technology | Role | Port |
-|---|---|---|---|
-| **`vote`** | Python 3.11 (Flask) | User-facing web frontend to cast votes | 80 |
-| **`redis`** | Redis (Alpine) | In-memory message queue buffering votes | 6379 |
-| **`worker`** | .NET 7.0 | Background service consuming votes from Redis | N/A |
-| **`db`** | PostgreSQL 15 (Alpine) | Persistent relational database storing final vote counts | 5432 |
-| **`result`** | Node.js 18 (Socket.IO) | Real-time web frontend displaying vote tallies | 4000 (LB: 80) |
-
-### System & Deployment Architecture Diagram
-
-```mermaid
-flowchart TD
-    subgraph CI_CD["1. CI/CD & DevSecOps (GitHub Actions)"]
-        GitCommit["git push origin main"] --> Pipeline["GitHub Actions (.github/workflows/deploy.yml)"]
-        Pipeline --> Trivy["Trivy Vulnerability Scanner"]
-        Trivy --> DockerBuild["Docker BuildKit"]
-        DockerBuild -->|Tag :latest & :SHA| DockerHub[("Docker Hub Registry<br/>docker.io/kachdev/*")]
-    end
-
-    subgraph IaC["2. Infrastructure as Code (Terraform)"]
-        TFCode["Terraform Configs (terraform/)"] --> TFApply["terraform apply"]
-        TFApply --> EKSCluster["AWS EKS Cluster<br/>voting-app-cluster-kachi (us-east-1)"]
-        TFApply --> NodeGroup["Managed Node Group<br/>(t3.medium instances)"]
-    end
-
-    subgraph K8s["3. Kubernetes Orchestration (Helm: voting-app-chart)"]
-        HelmCLI["helm upgrade --install voting-app"] --> K8sManifests["Deployments & Services"]
-        
-        subgraph Pods["Microservices Pods"]
-            VotePod["vote (Python)<br/>Port 80"]
-            RedisPod[("redis<br/>Port 6379")]
-            WorkerPod["worker (.NET)"]
-            DBPod[("db (PostgreSQL)<br/>Port 5432")]
-            ResultPod["result (Node.js)<br/>Port 4000"]
-        end
-
-        subgraph Ingress["AWS Elastic LoadBalancers"]
-            VoteLB["Vote External LoadBalancer<br/>HTTP Port 80"]
-            ResultLB["Result External LoadBalancer<br/>HTTP Port 80 -> Target 4000"]
-        end
-
-        VoteLB --> VotePod
-        ResultLB --> ResultPod
-
-        VotePod -->|"Write to queue"| RedisPod
-        WorkerPod -->|"Consume from queue"| RedisPod
-        WorkerPod -->|"Write votes"| DBPod
-        ResultPod -->|"Query votes"| DBPod
-    end
-
-    DockerHub -.->|"Pull Images"| Pods
-```
-
----
-
-## 2. Containerization & Security Hardening
+## Containerization & Security Hardening
 
 To establish container security best practices, I refactored the Dockerfiles across the codebase:
 
