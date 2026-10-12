@@ -1,6 +1,6 @@
 # Capstone 1 Deployment Report: Distributed Voting Application on AWS EKS
 
-**Author:** Emmanuel  
+**Author:** Onyekachi Emmanuel   Onuoha
 **Project:** DevOps Capstone 1 – Containerization, CI/CD, IaC & Kubernetes Orchestration  
 **Cluster Name:** `voting-app-cluster-kachi`  
 **Docker Hub Registry:** `kachdev`  
