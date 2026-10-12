@@ -10,6 +10,19 @@ data "aws_subnets" "default" {
   }
 }
 
+data "aws_subnet" "default" {
+  for_each = toset(data.aws_subnets.default.ids)
+  id       = each.value
+}
+
+locals {
+  # EKS control plane does not support us-east-1e
+  eks_subnets = [
+    for s in data.aws_subnet.default : s.id
+    if s.availability_zone != "us-east-1e"
+  ]
+}
+
 # IAM Role for EKS Cluster
 resource "aws_iam_role" "cluster_role" {
   name = "${var.cluster_name}-role"
@@ -35,7 +48,7 @@ resource "aws_eks_cluster" "eks" {
   role_arn = aws_iam_role.cluster_role.arn
 
   vpc_config {
-    subnet_ids = data.aws_subnets.default.ids
+    subnet_ids = local.eks_subnets
   }
 
   depends_on = [aws_iam_role_policy_attachment.cluster_policy]
@@ -75,7 +88,7 @@ resource "aws_eks_node_group" "node_group" {
   cluster_name    = aws_eks_cluster.eks.name
   node_group_name = "${var.cluster_name}-nodes"
   node_role_arn   = aws_iam_role.node_role.arn
-  subnet_ids      = data.aws_subnets.default.ids
+  subnet_ids      = local.eks_subnets
 
   scaling_config {
     desired_size = 2

@@ -4,6 +4,6 @@ variable "aws_region" {
 }
 
 variable "cluster_name" {
-  default     = "voting-app-cluster"
+  default     = "voting-app-cluster-kachi"
   description = "Name of the Kubernetes cluster"
 }
